@@ -99,12 +99,25 @@ function themeToTrack(theme, anime) {
   };
 }
 
+// ─── Query string builder (preserves bracket syntax for JSON:API) ─────────────
+function buildQS(params) {
+  if (!params) return '';
+  return '?' + Object.entries(params)
+    .filter(([, v]) => v !== undefined && v !== null)
+    .map(([k, v]) => {
+      const key = encodeURIComponent(k).replace(/%5B/gi, '[').replace(/%5D/gi, ']');
+      return key + '=' + encodeURIComponent(String(v));
+    })
+    .join('&');
+}
+
 // ─── AnimeThemes API client ───────────────────────────────────────────────────
 async function atGet(path, params) {
-  const r = await axios.get(AT_API + path, {
-    params:  params || {},
+  const url = AT_API + path + buildQS(params);
+  console.log('[atGet]', url); // helpful for debugging
+  const r = await axios.get(url, {
     headers: { 'User-Agent': 'EclipseAnimeThemes/1.0.0', Accept: 'application/json' },
-    timeout: 15000
+    timeout: 10000 // tight timeout — Vercel Hobby cap is 10s
   });
   return r.data;
 }
