@@ -223,80 +223,108 @@ app.get('/search', async (req, res) => {
   const cacheKey = 'search:' + q.toLowerCase();
   const cached   = await cacheGet(cacheKey);
   if (cached) { console.log('[search] cache hit:', q); return res.json(cached); }
-
   console.log('[search] q:', JSON.stringify(q));
 
-  try {
-    // IMPORTANT: fields[search] uses SINGULAR names: anime, song, artist
-    // Plural forms (songs, artists) cause HTTP 422 from AnimeThemes API
-    const data = await atGet('/search', {
+  const [searchRes, songRes, artistRes] = await Promise.allSettled([
+    atGet('/search', {
       q,
       'fields[search]':  'anime,song,artist',
-      'include[anime]':  'animethemes.animethemeentries.videos,animethemes.song.artists,images',
-      'include[song]':   'animethemes.anime.images,animethemes.animethemeentries.videos,artists',
-      'include[artist]': 'images',
+      'include[anime]':  'animethemes.animethemeentries.videos,animethemes.song,animethemes.song.artists,images',
       'page[limit]':     '5'
-    });
+    }),
+    atGetSafe('/song', {
+      q,
+      include:         'animethemes.animethemeentries.videos,animethemes.anime,animethemes.anime.images,artists',
+      'page[size]':    '10',
+      'filter[has]':   'animethemeentries'
+    }),
+    atGetSafe('/artist', {
+      q,
+      include:       'images',
+      'page[size]':  '5'
+    })
+  ]);
 
-    const search  = data.search  || {};
-    const animes  = search.anime   || [];
-    // API returns plural keys in search response even though request uses singular
-    const songs   = search.songs   || search.song   || [];
-    const artists = search.artists || search.artist || [];
-
+  try {
     const tracks   = [];
     const albums   = [];
     const trackIds = new Set();
 
-    for (const anime of animes) {
-      const themes = anime.animethemes || [];
-      for (const theme of themes) {
-        const track = themeToTrack(theme, anime);
-        if (track && !trackIds.has(track.id)) {
-          trackIds.add(track.id);
-          tracks.push(track);
+    if (searchRes.status === 'fulfilled' && searchRes.value) {
+      const animes = (searchRes.value.search || {}).anime || [];
+      for (const anime of animes) {
+        const themes = anime.animethemes || [];
+        for (const theme of themes) {
+          const track = themeToTrack(theme, anime);
+          if (track && !trackIds.has(track.id)) { trackIds.add(track.id); tracks.push(track); }
+        }
+        if (anime.slug) {
+          albums.push({
+            id: 'anime_' + anime.slug,
+            title: anime.name || anime.slug,
+            artist: 'Various Artists',
+            artworkURL: getAnimeImage(anime),
+            trackCount: themes.length || undefined,
+            year: anime.year ? String(anime.year) : undefined
+          });
         }
       }
-      if (anime.slug) {
-        albums.push({
-          id:         'anime_' + anime.slug,
-          title:      anime.name || anime.slug,
-          artist:     'Various Artists',
-          artworkURL: getAnimeImage(anime),
-          trackCount: themes.length || undefined,
-          year:       anime.year ? String(anime.year) : undefined
+    }
+
+    if (songRes.status === 'fulfilled' && songRes.value) {
+      const songs = songRes.value.songs || [];
+      for (const song of songs) {
+        for (const theme of (song.animethemes || [])) {
+          if (!theme.song) theme.song = {};
+          if (!theme.song.artists) theme.song.artists = song.artists || [];
+          if (!theme.song.title)   theme.song.title   = song.title;
+
+          const anime = theme.anime;
+          const track = themeToTrack(theme, anime);
+          if (track && !trackIds.has(track.id)) {
+            trackIds.add(track.id);
+            tracks.push(track);
+          }
+
+          if (anime && anime.slug && !albums.find(a => a.id === 'anime_' + anime.slug)) {
+            albums.push({
+              id: 'anime_' + anime.slug,
+              title: anime.name || anime.slug,
+              artist: 'Various Artists',
+              artworkURL: getAnimeImage(anime),
+              year: anime.year ? String(anime.year) : undefined
+            });
+          }
+        }
+      }
+    }
+
+    const artistList = [];
+    if (artistRes.status === 'fulfilled' && artistRes.value) {
+      const raw = artistRes.value.artists || [];
+      for (const a of raw.slice(0, 5)) {
+        artistList.push({
+          id: 'artist_' + (a.slug || String(a.id)),
+          name: a.name || 'Unknown',
+          artworkURL: getArtistImage(a)
         });
       }
     }
 
-    for (const song of songs) {
-      for (const theme of (song.animethemes || [])) {
-        const track = themeToTrack(theme, theme.anime);
-        if (track && !trackIds.has(track.id)) {
-          trackIds.add(track.id);
-          tracks.push(track);
-        }
-      }
-    }
+    const result = {
+      tracks: tracks.slice(0, 20),
+      albums: albums.slice(0, 8),
+      artists: artistList
+    };
 
-    const artistList = artists.slice(0, 5).map(a => ({
-      id:         'artist_' + (a.slug || String(a.id)),
-      name:       a.name || 'Unknown',
-      artworkURL: getArtistImage(a)
-    }));
-
-    console.log('[search] tracks:', tracks.length, 'albums:', albums.length, 'artists:', artistList.length);
-
-    const result = { tracks: tracks.slice(0, 20), albums: albums.slice(0, 8), artists: artistList };
     await cacheSet(cacheKey, result);
     res.json(result);
-
   } catch (e) {
-    const detail = e.response
+    const d = e.response
       ? `HTTP ${e.response.status} — ${JSON.stringify(e.response.data).slice(0, 400)}`
       : e.message;
-    console.error('[search] ERROR:', detail);
-    res.status(502).json({ error: 'Search failed: ' + detail, tracks: [], albums: [], artists: [] });
+    console.error('[search] ERROR:', d);
+    res.status(502).json({ error: 'Search failed: ' + d, tracks: [], albums: [], artists: [] });
   }
 });
 
