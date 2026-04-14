@@ -105,8 +105,15 @@ function buildQS(params) {
   return '?' + Object.entries(params)
     .filter(([, v]) => v !== undefined && v !== null)
     .map(([k, v]) => {
-      const key = encodeURIComponent(k).replace(/%5B/gi, '[').replace(/%5D/gi, ']');
-      return key + '=' + encodeURIComponent(String(v));
+      // Keys: preserve brackets for JSON:API (fields[], include[], page[])
+      const key = encodeURIComponent(k)
+        .replace(/%5B/gi, '[')
+        .replace(/%5D/gi, ']');
+      // Values: preserve commas (list separators) and dots (relationship paths)
+      const val = encodeURIComponent(String(v))
+        .replace(/%2C/gi, ',')
+        .replace(/%2E/gi, '.');
+      return key + '=' + val;
     })
     .join('&');
 }
